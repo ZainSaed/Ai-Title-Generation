@@ -1,0 +1,723 @@
+{
+  "name": "Ai Title Generation",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -288,
+        -32
+      ],
+      "id": "cdec8a32-a6af-4d51-b4e7-c1434fa90f61",
+      "name": "When clicking ‘Execute workflow’"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.ebay.com/identity/v1/oauth2/token",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/x-www-form-urlencoded"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "grant_type",
+              "value": "client_credentials"
+            },
+            {
+              "name": "scope",
+              "value": "https://api.ebay.com/oauth/api_scope"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -16,
+        -160
+      ],
+      "id": "421131aa-5732-43c8-9f6f-c8dc2df22135",
+      "name": "HTTP Request",
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "leaJp9pLBm1g72Pw",
+          "name": "Unnamed credential"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// NODE NAMES\n// ============================================================\n\nconst SKU1_NODE = \"Search SKU 1\";\nconst SKU2_NODE = \"Search SKU 2\";\nconst BRAND_NODE = \"Breville Brand\";\nconst LOOP_NODE = \"Loop Over Items2\";\n\n\n// ============================================================\n// HELPERS\n// ============================================================\n\nfunction getNodeItems(nodeName) {\n  try {\n    return $items(nodeName);\n  } catch (error) {\n    return [];\n  }\n}\n\n\nfunction cleanText(value) {\n  if (value === null || value === undefined) {\n    return \"\";\n  }\n\n  return String(value).trim();\n}\n\n\nfunction isError(item) {\n  if (!item || !item.json) {\n    return true;\n  }\n\n  const data = item.json;\n\n  return Boolean(\n    data.error ||\n    data.errorMessage ||\n    data.errorDescription ||\n    (data.statusCode && Number(data.statusCode) >= 400) ||\n    (data.code && String(data.code).startsWith(\"ERR_\"))\n  );\n}\n\n\n// ============================================================\n// GET DATA\n// ============================================================\n\nconst sku1Items = getNodeItems(SKU1_NODE);\nconst sku2Items = getNodeItems(SKU2_NODE);\nconst brandItems = getNodeItems(BRAND_NODE);\n\n\n// ============================================================\n// GET ROW NUMBER + SKUs FOR *THIS* LOOP ITERATION\n// ============================================================\n\n// IMPORTANT: We reference Loop Over Items2 by name using .item\n// (paired-item lookup), NOT $items() across all 8 rows.\n// .item follows the exact connection path back to the single\n// row that triggered THIS specific iteration. This is what\n// makes row_number, SKU 1, and SKU 2 correct per-iteration\n// instead of always resolving to the first sheet row.\n\nlet rowNumber = null;\nlet sku1 = \"\";\nlet sku2 = \"\";\n\ntry {\n  const loopItem = $(LOOP_NODE).item.json;\n\n  rowNumber = loopItem.row_number ?? null;\n  sku1 = cleanText(loopItem[\"SKU 1\"]);\n  sku2 = cleanText(loopItem[\"SKU 2\"]);\n} catch (error) {\n  // If pairing fails for any reason, leave defaults\n  // (null/\"\") rather than silently grabbing the wrong row.\n}\n\n\n// ============================================================\n// EBAY TITLES\n// ============================================================\n\nconst ebayTitles = [];\n\n\nfunction addTitle(title) {\n\n  title = cleanText(title);\n\n  if (!title) {\n    return;\n  }\n\n\n  // Don't add obvious error messages\n  const lowerTitle = title.toLowerCase();\n\n  if (\n    lowerTitle.includes(\"axioserror\") ||\n    lowerTitle.includes(\"404 -\") ||\n    lowerTitle.includes(\"request failed\")\n  ) {\n    return;\n  }\n\n\n  // Remove duplicate titles case-insensitively\n  const exists = ebayTitles.some(\n    existing =>\n      existing.toLowerCase() === lowerTitle\n  );\n\n  if (!exists) {\n    ebayTitles.push(title);\n  }\n}\n\n\nfunction extractEbayTitles(items) {\n\n  for (const item of items) {\n\n    if (isError(item)) {\n      continue;\n    }\n\n    const data = item.json;\n\n\n    // --------------------------------------------------------\n    // Direct title\n    // --------------------------------------------------------\n\n    if (data.title) {\n      addTitle(data.title);\n    }\n\n\n    // --------------------------------------------------------\n    // eBay Browse API itemSummaries\n    // --------------------------------------------------------\n\n    if (Array.isArray(data.itemSummaries)) {\n\n      for (const product of data.itemSummaries) {\n\n        if (\n          product &&\n          product.title\n        ) {\n          addTitle(product.title);\n        }\n      }\n    }\n  }\n}\n\n\n// ============================================================\n// EXTRACT EBAY DATA\n// ============================================================\n\n// Search SKU 1\nextractEbayTitles(sku1Items);\n\n// Search SKU 2\nextractEbayTitles(sku2Items);\n\n\n// ============================================================\n// BREVILLE BRAND DATA\n// ============================================================\n\nlet brandTitle = \"\";\nlet brandDetails = \"\";\nlet worksWith = [];\n\n\n// ============================================================\n// RECURSIVELY FIND A FIELD\n// ============================================================\n\nfunction findField(obj, possibleNames) {\n\n  if (!obj || typeof obj !== \"object\") {\n    return null;\n  }\n\n\n  // ----------------------------------------------------------\n  // Array\n  // ----------------------------------------------------------\n\n  if (Array.isArray(obj)) {\n\n    for (const value of obj) {\n\n      const result = findField(\n        value,\n        possibleNames\n      );\n\n      if (\n        result !== null &&\n        result !== undefined\n      ) {\n        return result;\n      }\n    }\n\n    return null;\n  }\n\n\n  // ----------------------------------------------------------\n  // Object\n  // ----------------------------------------------------------\n\n  for (const [key, value] of Object.entries(obj)) {\n\n    const normalizedKey = key\n      .toLowerCase()\n      .replace(/[\\s_-]/g, \"\");\n\n\n    // Exact normalized field match\n    if (\n      possibleNames.includes(\n        normalizedKey\n      )\n    ) {\n      return value;\n    }\n\n\n    // Search nested objects\n    if (\n      value &&\n      typeof value === \"object\"\n    ) {\n\n      const result = findField(\n        value,\n        possibleNames\n      );\n\n      if (\n        result !== null &&\n        result !== undefined\n      ) {\n        return result;\n      }\n    }\n  }\n\n  return null;\n}\n\n\n// ============================================================\n// PROCESS BREVILLE RESPONSE\n// ============================================================\n\nfor (const item of brandItems) {\n\n  if (isError(item)) {\n    continue;\n  }\n\n  const data = item.json;\n\n\n  // ----------------------------------------------------------\n  // TITLE\n  // ----------------------------------------------------------\n\n  if (!brandTitle) {\n\n    const value = findField(\n      data,\n      [\n        \"title\",\n        \"producttitle\",\n        \"productname\",\n        \"name\"\n      ]\n    );\n\n    if (typeof value === \"string\") {\n\n      brandTitle = cleanText(value);\n    }\n  }\n\n\n  // ----------------------------------------------------------\n  // DETAILS\n  // ----------------------------------------------------------\n\n  if (!brandDetails) {\n\n    const value = findField(\n      data,\n      [\n        \"details\",\n        \"description\",\n        \"productdescription\",\n        \"shortdescription\"\n      ]\n    );\n\n    if (typeof value === \"string\") {\n\n      brandDetails = cleanText(value);\n    }\n  }\n\n\n  // ----------------------------------------------------------\n  // WORKS WITH\n  // ----------------------------------------------------------\n\n  const value = findField(\n    data,\n    [\n      \"workswith\",\n      \"compatiblewith\",\n      \"compatibility\",\n      \"compatibleproducts\",\n      \"compatiblemodels\"\n    ]\n  );\n\n\n  if (value) {\n\n    // --------------------------------------------------------\n    // Array\n    // --------------------------------------------------------\n\n    if (Array.isArray(value)) {\n\n      for (const entry of value) {\n\n        // String entry\n        if (\n          typeof entry === \"string\" &&\n          entry.trim()\n        ) {\n\n          worksWith.push(\n            entry.trim()\n          );\n        }\n\n\n        // Object entry\n        else if (\n          entry &&\n          typeof entry === \"object\"\n        ) {\n\n          const text = Object.values(entry)\n            .filter(\n              v =>\n                typeof v === \"string\" ||\n                typeof v === \"number\"\n            )\n            .map(\n              v =>\n                String(v).trim()\n            )\n            .filter(Boolean)\n            .join(\" — \");\n\n\n          if (text) {\n            worksWith.push(text);\n          }\n        }\n      }\n    }\n\n\n    // --------------------------------------------------------\n    // String\n    // --------------------------------------------------------\n\n    else if (\n      typeof value === \"string\"\n    ) {\n\n      worksWith.push(\n        value.trim()\n      );\n    }\n  }\n}\n\n\n// ============================================================\n// REMOVE DUPLICATE WORKS WITH\n// ============================================================\n\nworksWith = [\n  ...new Set(\n    worksWith\n      .map(\n        value =>\n          value.trim()\n      )\n      .filter(Boolean)\n  )\n];\n\n\n// ============================================================\n// CHECK RESULTS\n// ============================================================\n\nconst hasEbayResults =\n  ebayTitles.length > 0;\n\n\nconst hasBrandResults =\n  Boolean(brandTitle) ||\n  Boolean(brandDetails) ||\n  worksWith.length > 0;\n\n\n// ============================================================\n// EVERYTHING FAILED\n// ============================================================\n\nif (\n  !hasEbayResults &&\n  !hasBrandResults\n) {\n\n  const output = {\n    row_number: rowNumber\n  };\n\n\n  // Return SKU 1 if available\n  if (sku1) {\n    output[\"SKU 1\"] = sku1;\n  }\n\n\n  // Return SKU 2 if available\n  if (sku2) {\n    output[\"SKU 2\"] = sku2;\n  }\n\n\n  output.result = \"No results\";\n\n\n  return [\n    {\n      json: output\n    }\n  ];\n}\n\n\n// ============================================================\n// FINAL OUTPUT\n// ============================================================\n\nconst output = {\n  row_number: rowNumber\n};\n\n\n// ============================================================\n// SKU 1\n// ============================================================\n\nif (sku1) {\n  output[\"SKU 1\"] = sku1;\n}\n\n\n// ============================================================\n// SKU 2\n// ============================================================\n\nif (sku2) {\n  output[\"SKU 2\"] = sku2;\n}\n\n\n// ============================================================\n// EBAY TITLES\n// ============================================================\n\nif (hasEbayResults) {\n\n  output.ebay_titles = ebayTitles\n    .map(\n      (title, index) =>\n        `${index + 1}. ${title}`\n    )\n    .join(\"\\n\");\n\n} else {\n\n  output.ebay_result = \"No output\";\n}\n\n\n// ============================================================\n// BREVILLE TITLE\n// ============================================================\n\nif (brandTitle) {\n\n  output.brand_title =\n    brandTitle;\n}\n\n\n// ============================================================\n// BREVILLE DETAILS\n// ============================================================\n\nif (brandDetails) {\n\n  output.brand_details =\n    brandDetails;\n}\n\n\n// ============================================================\n// BREVILLE WORKS WITH\n// ============================================================\n\nif (worksWith.length > 0) {\n\n  output.works_with = worksWith\n    .map(\n      (value, index) =>\n        `${index + 1}. ${value}`\n    )\n    .join(\"\\n\");\n}\n\n\n// ============================================================\n// BREVILLE COMPLETELY FAILED\n// ============================================================\n\nif (!hasBrandResults) {\n\n  output.brand_result =\n    \"No output\";\n}\n\n\n// ============================================================\n// RETURN\n// ============================================================\n\nreturn [\n  {\n    json: output\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1328,
+        32
+      ],
+      "id": "71adf681-8818-46ed-b7b7-b5576fd2470b",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1IhZRjWT2gWrpA7hTzIXjfOeIsW_N7fQS6o1yedkqD7Y",
+          "mode": "list",
+          "cachedResultName": "AI Title Generation",
+          "cachedResultUrl": ""
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": ""
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -16,
+        64
+      ],
+      "id": "b8557224-5470-4899-bfd6-3166a0e77dca",
+      "name": "Get row(s) in sheet",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "5gdNAayJy3YTQ5mR",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "1IhZRjWT2gWrpA7hTzIXjfOeIsW_N7fQS6o1yedkqD7Y",
+          "mode": "list",
+          "cachedResultName": "AI Title Generation",
+          "cachedResultUrl": ""
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": ""
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "row_number": "={{ $json.row_number }}",
+            "Titles": "={{ $json.titles }}"
+          },
+          "matchingColumns": [
+            "row_number"
+          ],
+          "schema": [
+            {
+              "id": "SKU 1",
+              "displayName": "SKU 1",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "SKU 2",
+              "displayName": "SKU 2",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "Titles",
+              "displayName": "Titles",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "readOnly": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1744,
+        128
+      ],
+      "id": "b072a256-3805-48e3-a378-6ca50db085de",
+      "name": "Update row in sheet",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "5gdNAayJy3YTQ5mR",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "numberInputs": 3
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        1136,
+        16
+      ],
+      "id": "89fefd41-5b8f-4a49-bc91-7893b23961c7",
+      "name": "Merge1"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        256,
+        80
+      ],
+      "id": "cb8f33db-0258-484a-bec3-068a5b706dc2",
+      "name": "Loop Over Items2"
+    },
+    {
+      "parameters": {
+        "url": "https://api.ebay.com/buy/browse/v1/item_summary/search",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "q",
+              "value": "={{ $json['SKU 1'] }}"
+            },
+            {
+              "name": "filter",
+              "value": "itemLocationCountry:AU"
+            },
+            {
+              "name": "limit",
+              "value": "20"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('HTTP Request').first().json.access_token }}"
+            },
+            {
+              "name": "X-EBAY-C-MARKETPLACE-ID",
+              "value": "EBAY_AU"
+            },
+            {
+              "name": "X-EBAY-C-ENDUSERCTX",
+              "value": "contextualLocation=country=AU,zip=<any valid AU postcode e.g. 2000>"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        928,
+        -192
+      ],
+      "id": "24acce97-fa3e-4a09-9a1b-000a982e75c3",
+      "name": "Search SKU 1",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "url": "https://api.ebay.com/buy/browse/v1/item_summary/search",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "=q",
+              "value": "={{ $json['SKU 2'] }}"
+            },
+            {
+              "name": "filter",
+              "value": "itemLocationCountry:AU"
+            },
+            {
+              "name": "limit",
+              "value": "20"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('HTTP Request').first().json.access_token }}"
+            },
+            {
+              "name": "X-EBAY-C-MARKETPLACE-ID",
+              "value": "EBAY_AU"
+            },
+            {
+              "name": "X-EBAY-C-ENDUSERCTX",
+              "value": "contextualLocation=country=AU,zip=<any valid AU postcode e.g. 2000>"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        928,
+        16
+      ],
+      "id": "2a785864-fd52-4f1e-953b-c7d42aa5af23",
+      "name": "Search SKU 2",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "url": "={{ \"https://www.breville.com/en-au/product/\" + $json.SKU2 }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            },
+            {
+              "name": "Accept",
+              "value": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+            },
+            {
+              "name": "Accept-Language",
+              "value": "en-AU,en;q=0.9"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        928,
+        224
+      ],
+      "id": "b4eafad6-4eb0-4acc-aa8e-b3443d1e27a5",
+      "name": "Breville Brand",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=SKU 1: {{ $json['SKU 1'] || \"Not provided\" }}\nSKU 2: {{ $json['SKU 2'] || \"Not provided\" }}\n\neBay competitor titles:\n{{ $json.ebay_titles || $json.ebay_result || \"No eBay results found\" }}\n\nOfficial Breville product title:\n{{ $json.brand_title || \"Not available\" }}\n\nOfficial Breville product details:\n{{ $json.brand_details || \"Not available\" }}\n\nOfficial Breville verified compatibility (Works With):\n{{ $json.works_with || \"Not available\" }}\n\nBreville scrape status (only relevant if the three fields above are all \"Not available\"):\n{{ $json.brand_result || \"Data retrieved\" }}",
+        "messages": {
+          "messageValues": [
+            {
+              "message": "You generate exactly ONE eBay Australia title for a Breville replacement part. You will be given SKU 1, SKU 2, eBay competitor titles, and official Breville product data. Follow this procedure every time, in order. Do not skip steps or reorder them.\n\n## STEP 1 — ESTABLISH VERIFIED FACTS\n\nIDENTIFIERS (part/model numbers):\n- The ONLY usable identifiers are: SKU 1, SKU 2 (whichever are provided), and any part/model number that appears explicitly in the official Breville product title or details.\n- SKU 1 and SKU 2 always come from the input directly — never substitute or invent them from eBay or Breville data.\n- Do NOT add a part/model number that appears only in eBay competitor titles, even with agreement across listings. Identifiers are the one category where eBay is never trusted, regardless of the priority rule below.\n\nPRODUCT NAME/TYPE AND COMPATIBLE MACHINE:\n- PRIMARY SOURCE — eBay competitor titles: if eBay results exist, use them as the primary source for both product name/type AND compatible machine. Treat a name or compatibility claim as verified if 2 or more independent eBay listings agree on it. If only one listing exists or listings disagree with each other, treat that detail as unverified and simply omit it rather than guessing.\n- FALLBACK SOURCE — official Breville data: use Breville's title/details/Works With ONLY when eBay results are completely absent (\"No eBay results found\"). In that case, Breville data becomes your primary source instead for this row.\n- Do NOT mix sources for the same fact — if eBay results exist and give you a usable name/compatibility, use eBay's version even if Breville data is also available and says something different or additional. Only fall back to Breville when eBay has nothing at all.\n\nIf, after this step, you do not have a usable product type AND at least one usable identifier (SKU 1, SKU 2, or a Breville-confirmed part number), skip to STEP 7 and output \"Manual\".\n\n## STEP 2 — CHOOSE WORDING\n\n- Prefer the phrasing, structure, and keyword choices used across the eBay titles for the verified product type — this is proven SEO wording for this exact part category.\n- Layer in any additional verified specifics from Breville data (extra confirmed part numbers, more precise product naming) where it adds value without contradicting the eBay-verified name.\n- Never adopt a specific model number, machine name, or compatibility claim from a SINGLE eBay title if it doesn't meet the verification bar set in Step 1.\n\n## STEP 3 — DEDUPLICATE BEFORE WRITING\n\nBefore building the final title, compile your combined fact set from Steps 1–2 and remove all duplicates:\n- Never list the same part/model number twice, even if it appeared in both an eBay title and Breville data, or if SKU 1 and SKU 2 happen to be identical.\n- Never repeat the same word or descriptive phrase twice.\n- Never list the same compatible machine/model twice under different formatting (e.g. \"BFP800\" and \"BFP800 Food Processor\" referring to the same machine — keep only the clearer one).\n- When eBay and Breville each supply a version of the same fact (e.g. both give a product name), use only ONE version in the final title.\n\n## STEP 4 — BUILD THE TITLE\n\nRequired structure, in this exact order:\nBreville + Product Name + Model/Part Number(s) + for + Compatible Machine + Model\n\nFormatting rules:\n- Must start with the literal word \"Breville\".\n- Must include the product name (a descriptive noun phrase, e.g. \"Large Bowl Lid\", \"Stainless Steel Bowl\").\n- Must include at least one identifier (SKU 1, SKU 2, and/or a Breville-confirmed part number).\n- Use \"+\" only when multiple related parts are explicitly verified together (e.g. a lid and its matching seal both confirmed for the same product).\n- Use square brackets to group multiple identifiers when it improves readability, matching the style of the reference examples below.\n- Use \"for\" immediately before a verified compatible machine name/model — never use \"for\" without a machine name following it, and never place \"for\" anywhere except immediately before the compatible machine clause.\n- Reproduce every model number and part number EXACTLY as given — same casing, same slashes, same punctuation. Never reformat, abbreviate, or \"clean up\" an identifier.\n- Omit the \"for [machine]\" clause entirely if no verified compatible machine exists — do not guess one, and do not leave a dangling \"for\" with nothing after it.\n\nReference examples (format only — never copy their product data):\n\nBreville Large Bowl Lid [BFP800/178, SP0023310] for Kitchen Wizz 15 Pro BFP800\nBreville Large Bowl Lid + Large Seal [BFP800/178 + 179, SP0023310 + SP0002054]\nBreville Water Tank BNE800BSS/27B, SP0022118 for Nespresso Creatista Plus BNE800\nBreville Water Tank [BNE900/25A, SP0026973] for Nespresso Creatista Pro BNE900\nBreville Glass Mixing Bowl [BEM430SIL/04 SP0016206] for The Scraper Mixer BEM430\n\n## STEP 5 — SEO AND LENGTH\n\n- Prioritize product name, part number, machine name, and verified model in that order of importance if the title needs shortening.\n- Never add promotional words (BEST, CHEAP, SALE, NEW, GENUINE, REPLACEMENT) unless they appear in the verified official Breville data.\n- The title MUST be 80 characters or fewer, including spaces and punctuation. If it exceeds 80: remove redundant wording first, then non-essential compatibility detail — NEVER truncate or alter an identifier to save space.\n\n## STEP 6 — STRUCTURAL VALIDATION (MANDATORY FINAL CHECK)\n\nBefore outputting anything, check your constructed title against every rule below. If ANY check fails, discard the title and output \"Manual\" instead — do not output a partially-correct or malformed title.\n\n- [ ] Starts with the word \"Breville\" as the first word.\n- [ ] Contains a clear product name (not blank, not just an identifier).\n- [ ] Contains at least one identifier (SKU 1, SKU 2, or Breville-confirmed part number).\n- [ ] If a \"for\" clause is present, it is immediately followed by an actual machine name — no dangling \"for\" with nothing after it.\n- [ ] No duplicate identifiers, words, or phrases anywhere in the title (per Step 3).\n- [ ] No invented, guessed, or unverified information anywhere (per Step 1).\n- [ ] 80 characters or fewer, including spaces and punctuation.\n- [ ] No stray brackets, extra \"+\" signs, double spaces, or broken punctuation.\n- [ ] No promotional words unless Breville-verified.\n\n## STEP 7 — OUTPUT\n\nReturn ONLY one of the following, with no explanation, no reasoning, no quotation marks, no character count, and no alternates:\n- The final title text (only if it passed every check in Step 6), OR\n- The single word: Manual\n\nManual applies when: there is no usable product type AND no usable identifier at all, OR the constructed title fails any check in Step 6. A title with a verified name and identifier but no compatible machine is still valid output — do not fall back to Manual just because compatibility data is missing, only because the structure itself is broken or unverified."
+            }
+          ]
+        },
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        1968,
+        16
+      ],
+      "id": "e2a1120d-6157-4936-84d2-ba367f8b4bd0",
+      "name": "Basic LLM Chain"
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-3.1-flash-lite",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.1,
+      "position": [
+        1968,
+        176
+      ],
+      "id": "d7a78648-8257-4649-86d7-cbba5cff987d",
+      "name": "Google Gemini Chat Model",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "C7kAA2Z07X6MBqBo",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "24fd1eac-afa0-4515-bef2-ea33446f7fc7",
+              "leftValue": "={{ $json.ebay_titles }}{{ $json.brand_result }}",
+              "rightValue": "No results",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1520,
+        32
+      ],
+      "id": "ce474ee7-cce3-4fea-9938-149a9ff4f992",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// GET LLM TITLE\n// ============================================================\nconst title = String($json.text || \"\").trim();\n\n// ============================================================\n// GET ROW NUMBER AND ORIGINAL DATA FROM THE PREVIOUS CODE NODE\n// ============================================================\n// .item (not .first()) follows the paired-item chain back to\n// the exact row this loop iteration started from.\nconst source = $('Code in JavaScript').item.json;\n\nconst rowNumber = source.row_number;\n\n// ============================================================\n// GET ORIGINAL DATA\n// ============================================================\nconst sku1 = source[\"SKU 1\"] || \"\";\nconst sku2 = source[\"SKU 2\"] || \"\";\nconst ebayTitles = source.ebay_titles || \"\";\nconst brandResult = source.brand_result || \"\";\n\n// ============================================================\n// CHARACTER COUNT\n// ============================================================\nconst characterCount = title.length;\n\n// ============================================================\n// VALIDATION\n// ============================================================\nconst titleValid = characterCount <= 80;\n\n// ============================================================\n// OUTPUT\n// ============================================================\nreturn [\n  {\n    json: {\n      row_number: rowNumber,\n      \"SKU 1\": sku1,\n      \"SKU 2\": sku2,\n      ebay_titles: ebayTitles,\n      brand_result: brandResult,\n      text: title,\n      final_title: title,\n      character_count: characterCount,\n      title_valid: titleValid,\n      needs_retry: !titleValid\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2320,
+        16
+      ],
+      "id": "e3d9a058-9eff-4ece-b29b-98ecbd029d4d",
+      "name": "Code in JavaScript1"
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "1IhZRjWT2gWrpA7hTzIXjfOeIsW_N7fQS6o1yedkqD7Y",
+          "mode": "list",
+          "cachedResultName": "AI Title Generation",
+          "cachedResultUrl": ""
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": ""
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "SKU 2": "={{ $json[\"SKU 2\"] }}",
+            "Titles": "={{ $json.final_title }}"
+          },
+          "matchingColumns": [
+            "SKU 2"
+          ],
+          "schema": [
+            {
+              "id": "SKU 1",
+              "displayName": "SKU 1",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "SKU 2",
+              "displayName": "SKU 2",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Titles",
+              "displayName": "Titles",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        2528,
+        16
+      ],
+      "id": "cebc6ee6-f2a8-46e3-892b-2d0d2844af5a",
+      "name": "Append or update row in sheet",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "5gdNAayJy3YTQ5mR",
+          "name": "Google Sheets account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        [
+          {
+            "node": "Get row(s) in sheet",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        []
+      ]
+    },
+    "Get row(s) in sheet": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update row in sheet": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge1": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items2": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Search SKU 1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Search SKU 2",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Breville Brand",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search SKU 1": {
+      "main": [
+        [
+          {
+            "node": "Merge1",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Search SKU 2": {
+      "main": [
+        [
+          {
+            "node": "Merge1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Breville Brand": {
+      "main": [
+        [
+          {
+            "node": "Merge1",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Update row in sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Basic LLM Chain": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript1": {
+      "main": [
+        [
+          {
+            "node": "Append or update row in sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append or update row in sheet": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "b943a0f8-ab45-4c48-958d-f1ee015abad9",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "bf2695ab9a31d1eb93727a5d6380c85c05cb70bc1db57ba5423307be1b943a90"
+  },
+  "nodeGroups": [],
+  "id": "5vwFbVVIXon4Xf6d",
+  "tags": []
+}
